@@ -1,0 +1,805 @@
+openapi: 3.0.3
+# ---------------------------------------------------------------------------
+# STEP 1 — Service semantics as an OpenAPI document.
+#
+# Edit this file in the Swagger Editor (/editor once the server runs, or
+# https://editor.swagger.io) and fix every warning. Then `make gen-rest`.
+#
+# This file describes the running EXAMPLE, a key-value store. Students do
+# not implement it: replace it with your own service, keeping the structure:
+#   * every operation has an operationId  -> becomes a Go method name
+#   * reusable pieces live in components (schemas, parameters, responses)
+#   * reads take a `consistency` query parameter
+#   * errors are application/problem+json (RFC 9457)
+# ---------------------------------------------------------------------------
+info:
+  title: Smart Parking System
+  version: 1.0.0
+  description: |
+    A replicated parking management service supporting regular
+    and accessible parking spaces, manual and automatic reservations,
+    and sequential or linearizable reads.
+servers:
+  - url: /
+    description: The server that serves this page (use with /docs)
+  - url: http://localhost:8080
+    description: Node n1 (from Swagger Editor/UI containers; needs -cors-origin)
+tags:
+  - name: keys
+    description: Several keys at once (atomic)
+  - name: key
+    description: One key
+
+paths:
+  /v1/spaces:
+    get:
+      tags:
+        - Parking Spaces
+      summary: List parking spaces
+      operationId: listSpaces
+      description: |
+        Returns parking spaces, optionally filtered by type and status.
+        Supports sequential and linearizable consistency.
+      parameters:
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [REGULAR, ACCESSIBLE]
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [AVAILABLE, RESERVED]
+        - name: consistency
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [sequential, linearizable]
+            default: sequential
+      responses:
+        '200':
+          description: List of parking spaces
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ParkingSpace'
+        '400':
+          description: Invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+    post:
+      tags:
+        - Parking Spaces
+      summary: Create a new parking space
+      operationId: createSpace
+      description: |
+        Creates a new REGULAR or ACCESSIBLE parking space.
+        New spaces are initially AVAILABLE.
+        This is a linearizable write operation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSpaceRequest'
+      responses:
+        '201':
+          description: Parking space successfully created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingSpace'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '409':
+          description: Parking space already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+
+
+  /v1/spaces/batch:
+    post:
+      tags:
+        - Parking Spaces
+      summary: Create multiple parking spaces
+      operationId: createSpacesBatch
+      description: |
+        Creates multiple parking spaces in a single request.
+        Each item specifies a unique space ID and a space type.
+
+        Part I returns dummy responses without storing changes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSpacesBatchRequest'
+      responses:
+        '201':
+          description: Parking spaces created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateSpacesBatchResponse'
+        '400':
+          description: Invalid batch request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '409':
+          description: One or more parking spaces already exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+
+  /v1/spaces/{spaceId}:
+    get:
+      tags:
+        - Parking Spaces
+      summary: Get a specific parking space
+      operationId: getSpace
+      description: |
+        Returns the details of a single parking space.
+        Supports sequential and linearizable consistency.
+      parameters:
+        - name: spaceId
+          in: path
+          required: true
+          description: Unique identifier of the parking space
+          schema:
+            type: string
+          example: P15
+        - name: consistency
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [sequential, linearizable]
+            default: sequential
+      responses:
+        '200':
+          description: Parking space found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingSpace'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '404':
+          description: Parking space not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+
+    put:
+      tags:
+        - Parking Spaces
+      summary: Create or update a parking space
+      operationId: putSpace
+      description: |
+        Creates a parking space if it does not exist, or replaces
+        its configuration if it already exists.
+
+        The space type can be REGULAR or ACCESSIBLE.
+        A new space is initially AVAILABLE.
+
+        Changing the type of a RESERVED space is not allowed.
+        Repeating a PUT with the same type leaves its state unchanged.
+
+        This is a linearizable write operation.
+      parameters:
+        - name: spaceId
+          in: path
+          required: true
+          description: Unique identifier of the parking space
+          schema:
+            type: string
+          example: P15
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSpaceRequest'
+      responses:
+        '200':
+          description: Existing parking space successfully updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingSpace'
+        '201':
+          description: New parking space successfully created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingSpace'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '409':
+          description: Cannot change the type of a reserved space
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+
+
+    patch:
+      tags:
+        - Parking Spaces
+      summary: Partially update a parking space
+      operationId: patchSpace
+      description: |
+        Updates the type of an existing parking space.
+        Unlike PUT, PATCH never creates a new space.
+
+        Changing the type of a RESERVED space is not allowed.
+        In Part I this operation returns a dummy gRPC response.
+      parameters:
+        - name: spaceId
+          in: path
+          required: true
+          description: Unique identifier of the parking space
+          schema:
+            type: string
+          example: P01
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSpaceRequest'
+      responses:
+        '200':
+          description: Parking space successfully updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingSpace'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '404':
+          description: Parking space not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '409':
+          description: Reserved parking space cannot be modified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+
+
+    delete:
+      tags:
+        - Parking Spaces
+      summary: Delete a parking space
+      operationId: deleteSpace
+      description: |
+        Removes an existing parking space.
+
+        Only AVAILABLE parking spaces can be deleted.
+        Attempting to delete a RESERVED space returns 409 Conflict.
+
+        This is a linearizable write operation.
+      parameters:
+        - name: spaceId
+          in: path
+          required: true
+          description: Unique identifier of the parking space
+          schema:
+            type: string
+          example: P15
+      responses:
+        '204':
+          description: Parking space successfully deleted
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '404':
+          description: Parking space not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '409':
+          description: Cannot delete a reserved parking space
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+    
+  
+  /v1/reservations:
+    post:
+      tags:
+        - Reservations
+      summary: Create a parking reservation
+      operationId: createReservation
+      description: |
+        Creates a parking reservation using manual or automatic assignment.
+
+        Manual assignment:
+        If spaceId is provided, the system attempts to reserve that space.
+
+        Automatic assignment:
+        If spaceId is omitted, the system selects an available
+        REGULAR space with the lowest numerical ID.
+        If no regular space is available and the driver has an
+        accessible parking permit, the system selects the
+        lowest-numbered available ACCESSIBLE space.
+
+        An ACCESSIBLE space requires hasAccessiblePermit to be true.
+        Each license plate may have only one active reservation.
+        A reservation expires after 30 minutes.
+
+        This operation atomically checks eligibility and availability
+        before reserving the space.
+        It is a linearizable read-modify-write operation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReservationRequest'
+      responses:
+        '201':
+          description: Reservation successfully created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        '400':
+          description: Invalid reservation request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '403':
+          description: Accessible parking permit required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '404':
+          description: Requested parking space does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '409':
+          description: |
+            Parking space already reserved, no eligible spaces available,
+            or vehicle already has an active reservation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+
+
+  /v1/reservations/{reservationId}:
+    get:
+      tags:
+        - Reservations
+      summary: Get a parking reservation
+      operationId: getReservation
+      description: |
+        Returns the details of an active parking reservation.
+        Supports sequential and linearizable consistency.
+      parameters:
+        - name: reservationId
+          in: path
+          required: true
+          description: Unique identifier of the reservation
+          schema:
+            type: string
+          example: R1001
+        - name: consistency
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [sequential, linearizable]
+            default: sequential
+      responses:
+        '200':
+          description: Reservation found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '404':
+          description: Reservation not found or expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+
+    delete:
+      tags:
+        - Reservations
+      summary: Cancel a parking reservation
+      operationId: cancelReservation
+      description: |
+        Cancels an active reservation using its reservation ID.
+
+        The associated parking space becomes AVAILABLE again.
+        A reservation that does not exist or has already expired
+        cannot be canceled.
+
+        This is a linearizable write operation.
+      parameters:
+        - name: reservationId
+          in: path
+          required: true
+          description: Unique identifier of the reservation
+          schema:
+            type: string
+          example: R1001
+      responses:
+        '204':
+          description: Reservation successfully canceled
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '404':
+          description: Reservation not found or expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+
+
+  /v1/parking/stats:
+    get:
+      tags:
+        - Parking Statistics
+      summary: Get parking lot statistics
+      operationId: getParkingStats
+      description: |
+        Returns the total number of parking spaces and their
+        distribution by availability status and space type.
+
+        Supports sequential and linearizable consistency.
+      parameters:
+        - name: consistency
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [sequential, linearizable]
+            default: sequential
+      responses:
+        '200':
+          description: Parking statistics successfully retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingStats'
+        '400':
+          description: Invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingError'
+
+
+
+components:
+  parameters:
+    Key:
+      name: key
+      in: path
+      required: true
+      schema: { type: string }
+    Consistency:
+      name: consistency
+      in: query
+      required: false
+      schema: { $ref: '#/components/schemas/Consistency' }
+    Sort:
+      name: sort
+      in: query
+      required: false
+      description: Sort field; prefix `-` for descending. Ties break by key.
+      schema:
+        type: string
+        enum: [key, -key, value, -value, version, -version]
+        default: key
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: Write only if the entry's ETag (version) equals this
+      schema: { type: string }
+
+  headers:
+    ETag:
+      description: The entry's version, quoted (e.g. "3")
+      schema: { type: string }
+
+  responses:
+    Problem:
+      description: Error (RFC 9457 problem details)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    Consistency:
+      type: string
+      enum: [sequential, linearizable]
+      default: sequential
+
+    ParkingSpace:
+      type: object
+      required:
+        - spaceId
+        - type
+        - status
+      properties:
+        spaceId:
+          type: string
+          example: P15
+        type:
+          type: string
+          enum: [REGULAR, ACCESSIBLE]
+          example: ACCESSIBLE
+        status:
+          type: string
+          enum: [AVAILABLE, RESERVED]
+          example: AVAILABLE
+        reservationId:
+          type: string
+          example: R1001
+
+    Reservation:
+      type: object
+      required:
+        - reservationId
+        - spaceId
+        - licensePlate
+        - hasAccessiblePermit
+        - createdAt
+        - expiresAt
+      properties:
+        reservationId:
+          type: string
+          example: R1001
+        spaceId:
+          type: string
+          example: P15
+        licensePlate:
+          type: string
+          example: "1234567"
+        hasAccessiblePermit:
+          type: boolean
+          example: true
+        createdAt:
+          type: string
+          format: date-time
+          example: "2026-11-14T10:00:00Z"
+        expiresAt:
+          type: string
+          format: date-time
+          example: "2026-11-14T10:30:00Z"
+
+    CreateReservationRequest:
+      type: object
+      required:
+        - licensePlate
+        - hasAccessiblePermit
+      properties:
+        licensePlate:
+          type: string
+          example: "1234567"
+        hasAccessiblePermit:
+          type: boolean
+          example: false
+        spaceId:
+          type: string
+          example: P15
+
+    CreateSpaceRequest:
+      type: object
+      required:
+        - spaceId
+        - type
+      properties:
+        spaceId:
+          type: string
+          example: P25
+        type:
+          type: string
+          enum: [REGULAR, ACCESSIBLE]
+          example: REGULAR
+    
+    CreateSpacesBatchRequest:
+      type: object
+      required:
+        - spaces
+      properties:
+        spaces:
+          type: array
+          minItems: 1
+          description: Parking spaces to create
+          items:
+            $ref: '#/components/schemas/CreateSpaceRequest'
+
+    CreateSpacesBatchResponse:
+      type: object
+      required:
+        - spaces
+      properties:
+        spaces:
+          type: array
+          description: Created parking spaces
+          items:
+            $ref: '#/components/schemas/ParkingSpace'
+
+
+    UpdateSpaceRequest:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: [REGULAR, ACCESSIBLE]
+          example: ACCESSIBLE
+
+    ParkingStats:
+      type: object
+      required:
+        - totalSpaces
+        - availableSpaces
+        - reservedSpaces
+        - regularSpaces
+        - accessibleSpaces
+      properties:
+        totalSpaces:
+          type: integer
+          example: 100
+        availableSpaces:
+          type: integer
+          example: 25
+        reservedSpaces:
+          type: integer
+          example: 75
+        regularSpaces:
+          type: integer
+          example: 90
+        accessibleSpaces:
+          type: integer
+          example: 10
+
+    ParkingError:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: integer
+          example: 409
+        message:
+          type: string
+          example: Parking space P15 is already reserved
+
+    Problem:
+      type: object
+      required: [title, status]
+      properties:
+        type: { type: string, default: about:blank }
+        title: { type: string, description: Short summary, e.g. "Not Found" }
+        status: { type: integer, description: The HTTP status code }
+        detail: { type: string, description: What went wrong in this case }
