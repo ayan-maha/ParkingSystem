@@ -181,7 +181,7 @@ Line numbers are approximate for the inspected version; function names identify 
 | Integration and CORS tests | internal/httpapi/handlers_test.go:22; cmd/server/main_test.go:10 |
 | Two-process verification | etc/demo.sh; etc/check.sh; Makefile build/check targets |
 
-Swagger UI/Editor are embedded through api/spec.go. Optional Docker tools use separate origins; configurable CORS handles browser preflights, including PUT. The custom parking dashboard is not part of the implementation.
+In the submission, Swagger UI/Editor are embedded through internal/apidocs/spec.go; the Makefile copies api/openapi.yaml into that package before building. Optional Docker tools use separate origins; configurable CORS handles browser preflights, including PUT. The custom parking dashboard is not part of the implementation.
 
 <!-- page -->
 # 6. Verification, omissions, and known issues
