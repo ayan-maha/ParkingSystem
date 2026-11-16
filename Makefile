@@ -30,13 +30,14 @@ gen-proto:
 build: gen
 	go mod tidy
 	go vet ./...
+	go test ./...
 	go build -o bin/server ./cmd/server
 
 run: build
-	./bin/server -id n1 -http :8080 -grpc :50051
+	./bin/server -id n1 -http :8080 -grpc :50051 -cors-origin "$(CORS)"
 # Second node whose REST API forwards every call to n1 over gRPC.
 run2:
-	./bin/server -id n2 -http :8081 -grpc :50052 -target localhost:50051
+	./bin/server -id n2 -http :8081 -grpc :50052 -target localhost:50051 -cors-origin "$(CORS)"
 
 demo:
 	./etc/demo.sh

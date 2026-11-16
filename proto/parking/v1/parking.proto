@@ -6,10 +6,10 @@ package parking.v1;
 option go_package = "github.com/your-team/kvs/gen/parking/v1;parkingv1";
 
 service ParkingService {
-  rpc ListSpaces(ListSpacesRequest) returns (ListSpacesResponse);
+  rpc ListSpaces(ListSpacesRequest) returns (stream ListSpacesResponse);
   rpc GetSpace(GetSpaceRequest) returns (GetSpaceResponse);
   rpc AddSpace(AddSpaceRequest) returns (AddSpaceResponse);
-  rpc CreateSpacesBatch(CreateSpacesBatchRequest) returns (CreateSpacesBatchResponse);
+  rpc CreateSpacesBatch(stream CreateSpacesBatchRequest) returns (CreateSpacesBatchResponse);
   rpc PutSpace(PutSpaceRequest) returns (PutSpaceResponse);
   rpc PatchSpace(PatchSpaceRequest) returns (PatchSpaceResponse);
   rpc DeleteSpace(DeleteSpaceRequest) returns (DeleteSpaceResponse);
@@ -19,12 +19,6 @@ service ParkingService {
   rpc CancelReservation(CancelReservationRequest) returns (CancelReservationResponse);
 
   rpc GetParkingStats(GetParkingStatsRequest) returns (GetParkingStatsResponse);
-}
-
-enum Consistency {
-  CONSISTENCY_UNSPECIFIED = 0;
-  CONSISTENCY_SEQUENTIAL = 1;
-  CONSISTENCY_LINEARIZABLE = 2;
 }
 
 enum SpaceType {
@@ -70,11 +64,10 @@ message ParkingStats {
 message ListSpacesRequest {
   optional SpaceType type = 1;
   optional SpaceStatus status = 2;
-  Consistency consistency = 3;
 }
 
 message ListSpacesResponse {
-  repeated ParkingSpace spaces = 1;
+  ParkingSpace space = 1;
 }
 
 //
@@ -82,7 +75,6 @@ message ListSpacesResponse {
 //
 message GetSpaceRequest {
   string space_id = 1;
-  Consistency consistency = 2;
 }
 
 message GetSpaceResponse {
@@ -142,7 +134,6 @@ message CreateReservationResponse {
 //
 message GetReservationRequest {
   string reservation_id = 1;
-  Consistency consistency = 2;
 }
 
 message GetReservationResponse {
@@ -163,7 +154,6 @@ message CancelReservationResponse {
 // 9. Get parking lot statistics
 //
 message GetParkingStatsRequest {
-  Consistency consistency = 1;
 }
 
 message GetParkingStatsResponse {
@@ -181,13 +171,9 @@ message PatchSpaceResponse {
   ParkingSpace space = 1;
 }
 
-// Create several parking spaces with one gRPC request.
+// Stream parking-space requests and return one batch response.
 // Part I returns dummy results without persisting changes.
 message CreateSpacesBatchRequest {
-  repeated CreateSpacesBatchItem spaces = 1;
-}
-
-message CreateSpacesBatchItem {
   string space_id = 1;
   SpaceType type = 2;
 }

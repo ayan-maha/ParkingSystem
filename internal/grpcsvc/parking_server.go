@@ -2,6 +2,7 @@ package grpcsvc
 
 import (
 	"context"
+	"io"
 
 	parkingv1 "github.com/your-team/kvs/gen/parking/v1"
 
@@ -69,9 +70,10 @@ func (s *ParkingServer) GetSpace(
 
 // ListSpaces returns a dummy list of parking spaces.
 func (s *ParkingServer) ListSpaces(
-	ctx context.Context,
 	req *parkingv1.ListSpacesRequest,
-) (*parkingv1.ListSpacesResponse, error) {
+	stream grpc.ServerStreamingServer[parkingv1.ListSpacesResponse],
+) error {
+	ctx := stream.Context()
 	s.identifyServer(ctx)
 
 	spaces := []*parkingv1.ParkingSpace{
@@ -93,7 +95,7 @@ func (s *ParkingServer) ListSpaces(
 	}
 
 	// Apply optional filters to dummy data.
-	filtered := make([]*parkingv1.ParkingSpace, 0)
+	// Send one reply per matching space.
 
 	for _, space := range spaces {
 		if req.Type != nil && space.Type != req.GetType() {
@@ -104,12 +106,12 @@ func (s *ParkingServer) ListSpaces(
 			continue
 		}
 
-		filtered = append(filtered, space)
+		if err := stream.Send(&parkingv1.ListSpacesResponse{Space: space}); err != nil {
+			return err
+		}
 	}
 
-	return &parkingv1.ListSpacesResponse{
-		Spaces: filtered,
-	}, nil
+	return nil
 }
 
 // AddSpace returns a dummy newly created parking space.
@@ -138,28 +140,27 @@ func (s *ParkingServer) AddSpace(
 }
 
 func (s *ParkingServer) CreateSpacesBatch(
-	ctx context.Context,
-	req *parkingv1.CreateSpacesBatchRequest,
-) (*parkingv1.CreateSpacesBatchResponse, error) {
+	stream grpc.ClientStreamingServer[parkingv1.CreateSpacesBatchRequest, parkingv1.CreateSpacesBatchResponse],
+) error {
+	ctx := stream.Context()
 	s.identifyServer(ctx)
 
-	// A batch must contain at least one space.
-	if len(req.GetSpaces()) == 0 {
-		return nil, status.Error(
-			codes.InvalidArgument,
-			"batch must contain at least one parking space",
-		)
-	}
-
 	seen := make(map[string]bool)
-	spaces := make([]*parkingv1.ParkingSpace, 0, len(req.GetSpaces()))
+	spaces := make([]*parkingv1.ParkingSpace, 0)
 
 	// Validate every item before returning a successful response.
-	for _, item := range req.GetSpaces() {
+	for {
+		item, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
 		id := item.GetSpaceId()
 
 		if id == "" {
-			return nil, status.Error(
+			return status.Error(
 				codes.InvalidArgument,
 				"parking space ID is required",
 			)
@@ -167,14 +168,14 @@ func (s *ParkingServer) CreateSpacesBatch(
 
 		if item.GetType() != parkingv1.SpaceType_SPACE_TYPE_REGULAR &&
 			item.GetType() != parkingv1.SpaceType_SPACE_TYPE_ACCESSIBLE {
-			return nil, status.Error(
+			return status.Error(
 				codes.InvalidArgument,
 				"type must be REGULAR or ACCESSIBLE",
 			)
 		}
 
 		if seen[id] {
-			return nil, status.Error(
+			return status.Error(
 				codes.InvalidArgument,
 				"duplicate parking space ID in batch",
 			)
@@ -183,7 +184,7 @@ func (s *ParkingServer) CreateSpacesBatch(
 
 		// Dummy conflict for an existing parking space.
 		if id == "P02" {
-			return nil, status.Error(
+			return status.Error(
 				codes.AlreadyExists,
 				"parking space already exists",
 			)
@@ -196,10 +197,11 @@ func (s *ParkingServer) CreateSpacesBatch(
 		})
 	}
 
-	// Part I: return dummy objects without saving them.
-	return &parkingv1.CreateSpacesBatchResponse{
-		Spaces: spaces,
-	}, nil
+	if len(spaces) == 0 {
+		return status.Error(codes.InvalidArgument, "batch must contain at least one parking space")
+	}
+	// Part I: no state is persisted.
+	return stream.SendAndClose(&parkingv1.CreateSpacesBatchResponse{Spaces: spaces})
 }
 
 // PutSpace returns a dummy created or updated parking space.

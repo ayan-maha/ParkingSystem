@@ -33,6 +33,7 @@ func main() {
 	httpAddr := flag.String("http", ":8080", "client REST listen address")
 	grpcAddr := flag.String("grpc", ":50051", "internal gRPC listen address")
 	target := flag.String("target", "", "gRPC address the REST handlers call (default: this node)")
+	corsOrigin := flag.String("cors-origin", "", "allowed browser origin (empty disables CORS)")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -81,7 +82,7 @@ func main() {
 	})
 	hs := &http.Server{
 		Addr:              *httpAddr,
-		Handler:           httpapi.NewHTTPHandler(parkingv1.NewParkingServiceClient(conn), mux),
+		Handler:           withCORS(*corsOrigin, httpapi.NewHTTPHandler(parkingv1.NewParkingServiceClient(conn), mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -119,7 +120,7 @@ func withCORS(origin string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", origin)
-		h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		h.Set("Access-Control-Allow-Headers", "Content-Type, If-Match")
 		h.Set("Access-Control-Expose-Headers", "ETag") // let browser tools read it
 		if r.Method == http.MethodOptions {            // preflight

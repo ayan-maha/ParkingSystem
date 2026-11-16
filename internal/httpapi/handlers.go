@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"time"
 
@@ -44,7 +45,7 @@ func NewHTTPHandler(
 		},
 	)
 
-	return rest.HandlerFromMux(strict, mux)
+	return validateRequests(rest.HandlerFromMux(strict, mux))
 }
 
 // Convert gRPC errors into HTTP status codes.
@@ -67,18 +68,19 @@ func httpStatusFromGRPC(err error) int {
 	}
 }
 
-// Write errors in the format specified by ParkingError.
+// Write RFC 9457 Problem Details for API errors.
 func writeParkingError(
 	w http.ResponseWriter,
 	code int,
 	message string,
 ) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(code)
 
-	_ = json.NewEncoder(w).Encode(rest.ParkingError{
-		Code:    code,
-		Message: message,
+	_ = json.NewEncoder(w).Encode(rest.Problem{
+		Status: code,
+		Title:  http.StatusText(code),
+		Detail: &message,
 	})
 }
 
@@ -87,17 +89,9 @@ func (h *Handlers) GetSpace(
 	req rest.GetSpaceRequestObject,
 ) (rest.GetSpaceResponseObject, error) {
 
-	// Convert the requested consistency level to protobuf.
-	consistency := parkingv1.Consistency_CONSISTENCY_SEQUENTIAL
-	if req.Params.Consistency != nil &&
-		string(*req.Params.Consistency) == "linearizable" {
-		consistency = parkingv1.Consistency_CONSISTENCY_LINEARIZABLE
-	}
-
 	// Forward the REST request to the gRPC service.
 	result, err := h.Parking.GetSpace(ctx, &parkingv1.GetSpaceRequest{
-		SpaceId:     req.SpaceId,
-		Consistency: consistency,
+		SpaceId: req.SpaceId,
 	})
 	if err != nil {
 		return nil, err
@@ -116,15 +110,7 @@ func (h *Handlers) ListSpaces(
 	req rest.ListSpacesRequestObject,
 ) (rest.ListSpacesResponseObject, error) {
 
-	consistency := parkingv1.Consistency_CONSISTENCY_SEQUENTIAL
-	if req.Params.Consistency != nil &&
-		string(*req.Params.Consistency) == "linearizable" {
-		consistency = parkingv1.Consistency_CONSISTENCY_LINEARIZABLE
-	}
-
-	grpcReq := &parkingv1.ListSpacesRequest{
-		Consistency: consistency,
-	}
+	grpcReq := &parkingv1.ListSpacesRequest{}
 
 	// Optional space-type filter.
 	if req.Params.Type != nil {
@@ -151,7 +137,15 @@ func (h *Handlers) ListSpaces(
 
 	spaces := make(rest.ListSpaces200JSONResponse, 0)
 
-	for _, space := range result.GetSpaces() {
+	for {
+		reply, err := result.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		space := reply.GetSpace()
 		spaces = append(spaces, parkingSpaceFromProto(space))
 	}
 
@@ -352,15 +346,8 @@ func (h *Handlers) GetReservation(
 	req rest.GetReservationRequestObject,
 ) (rest.GetReservationResponseObject, error) {
 
-	consistency := parkingv1.Consistency_CONSISTENCY_SEQUENTIAL
-	if req.Params.Consistency != nil &&
-		string(*req.Params.Consistency) == "linearizable" {
-		consistency = parkingv1.Consistency_CONSISTENCY_LINEARIZABLE
-	}
-
 	result, err := h.Parking.GetReservation(ctx, &parkingv1.GetReservationRequest{
 		ReservationId: req.ReservationId,
-		Consistency:   consistency,
 	})
 	if err != nil {
 		return nil, err
@@ -396,15 +383,7 @@ func (h *Handlers) GetParkingStats(
 	req rest.GetParkingStatsRequestObject,
 ) (rest.GetParkingStatsResponseObject, error) {
 
-	consistency := parkingv1.Consistency_CONSISTENCY_SEQUENTIAL
-	if req.Params.Consistency != nil &&
-		string(*req.Params.Consistency) == "linearizable" {
-		consistency = parkingv1.Consistency_CONSISTENCY_LINEARIZABLE
-	}
-
-	result, err := h.Parking.GetParkingStats(ctx, &parkingv1.GetParkingStatsRequest{
-		Consistency: consistency,
-	})
+	result, err := h.Parking.GetParkingStats(ctx, &parkingv1.GetParkingStatsRequest{})
 	if err != nil {
 		return nil, err
 	}
@@ -433,7 +412,7 @@ func (h *Handlers) CreateSpacesBatch(
 	}
 
 	// Convert REST items to protobuf messages.
-	items := make([]*parkingv1.CreateSpacesBatchItem, 0, len(request.Body.Spaces))
+	items := make([]*parkingv1.CreateSpacesBatchRequest, 0, len(request.Body.Spaces))
 
 	for _, space := range request.Body.Spaces {
 		var spaceType parkingv1.SpaceType
@@ -452,20 +431,26 @@ func (h *Handlers) CreateSpacesBatch(
 			)
 		}
 
-		items = append(items, &parkingv1.CreateSpacesBatchItem{
+		items = append(items, &parkingv1.CreateSpacesBatchRequest{
 			SpaceId: space.SpaceId,
 			Type:    spaceType,
 		})
 	}
 
-	// Forward the complete batch in ONE gRPC request.
-	response, err := h.Parking.CreateSpacesBatch(
-		ctx,
-		&parkingv1.CreateSpacesBatchRequest{
-			Spaces: items,
-		},
-	)
-
+	// Stream all items, then receive the batch result.
+	stream, err := h.Parking.CreateSpacesBatch(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if err := stream.Send(item); err != nil {
+			if err == io.EOF {
+				_, err = stream.CloseAndRecv()
+			}
+			return nil, err
+		}
+	}
+	response, err := stream.CloseAndRecv()
 	if err != nil {
 		return nil, err
 	}
